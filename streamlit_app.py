@@ -2,19 +2,23 @@ import streamlit as st
 import pandas as pd
 import datetime
 
-# ----------------------------
-# CONFIG
-# ----------------------------
-APP_PASSWORD = "winbio2025"   # ← change to your CEO password
+# -------------------------------------------------------------
+# LOAD PASSWORD SAFELY FROM STREAMLIT SECRETS
+# -------------------------------------------------------------
+APP_PASSWORD = st.secrets.get("APP_PASSWORD", None)
+
+if APP_PASSWORD is None:
+    st.error("❌ ERROR: APP_PASSWORD is not set in Streamlit Secrets.")
+    st.stop()
 
 st.set_page_config(
     page_title="Vendor Price & Score Dashboard",
     layout="wide"
 )
 
-# ----------------------------
-# LOGIN SCREEN
-# ----------------------------
+# -------------------------------------------------------------
+# SECURE LOGIN SCREEN
+# -------------------------------------------------------------
 def login_screen():
     st.title("🔒 Secure Login")
 
@@ -23,7 +27,7 @@ def login_screen():
     if pw == APP_PASSWORD:
         st.session_state["auth"] = True
         st.success("Login successful! Loading dashboard...")
-        st.experimental_rerun()
+        st.rerun()  # ✅ correct for Streamlit 1.51
     elif pw:
         st.error("Incorrect password.")
 
@@ -37,9 +41,9 @@ if not st.session_state["auth"]:
     login_screen()
 
 
-# ----------------------------
-# FUNCTIONS
-# ----------------------------
+# -------------------------------------------------------------
+# PAYMENT TERMS → DAYS CALCULATION
+# -------------------------------------------------------------
 def recalc_terms_days(term_raw):
     """Recalculate payment terms based on today's date."""
     if pd.isna(term_raw):
@@ -54,12 +58,14 @@ def recalc_terms_days(term_raw):
     if "30 day" in term_raw:
         return 30
 
+    # August 1st terms
     if "August 1st" in term_raw:
         due = datetime.date(today.year, 8, 1)
         if due < today:
             due = datetime.date(today.year + 1, 8, 1)
         return (due - today).days
 
+    # March 15th terms
     if "March 15th" in term_raw:
         due = datetime.date(today.year, 3, 15)
         if due < today:
@@ -69,15 +75,18 @@ def recalc_terms_days(term_raw):
     return 0
 
 
+# -------------------------------------------------------------
+# SCORE CALCULATION
+# -------------------------------------------------------------
 def calculate_vendor_score(row):
     days = row["terms_days"]
     price = row["price"]
     return price + (1 / days) if days > 0 else 9999
 
 
-# ----------------------------
-# APP STARTS
-# ----------------------------
+# -------------------------------------------------------------
+# MAIN APP
+# -------------------------------------------------------------
 st.title("📊 Vendor Pricing, Terms & Score Dashboard")
 
 st.write("Upload your base dataset (master_pricing_clean.csv):")
@@ -87,6 +96,17 @@ uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
+    # ---------------------------------------------------------
+    # FIX PRICE VALUES → convert "$10.94" or "10.94" → 10.94
+    # ---------------------------------------------------------
+    df["price"] = (
+        df["price"]
+        .astype(str)
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+    )
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+
     # Auto-refresh terms_days every time app loads
     df["terms_days"] = df["terms_raw"].apply(recalc_terms_days)
 
@@ -95,9 +115,7 @@ if uploaded_file:
 
     st.success("Dataset loaded successfully!")
 
-    # ------------------------------
     # PRODUCT FILTER
-    # ------------------------------
     product_list = sorted(df["product"].unique())
     selected_product = st.selectbox("Select Product", product_list)
 
@@ -112,33 +130,23 @@ if uploaded_file:
         hide_index=True
     )
 
-    # Recalculate scores after edits
+    # Recalculate after edit
     edited_df["terms_days"] = edited_df["terms_raw"].apply(recalc_terms_days)
     edited_df["vendor_score"] = edited_df.apply(calculate_vendor_score, axis=1)
 
-    # ------------------------------
-    # CHARTS
-    # ------------------------------
+    # PRICE CHART
     st.subheader("📉 Vendor Price Comparison")
-    st.bar_chart(
-        edited_df.set_index("vendor_code")["price"]
-    )
+    st.bar_chart(edited_df.set_index("vendor_code")["price"])
 
+    # SCORE CHART
     st.subheader("🏆 Vendor Score Comparison (Lower = Better)")
-    st.bar_chart(
-        edited_df.set_index("vendor_code")["vendor_score"]
-    )
+    st.bar_chart(edited_df.set_index("vendor_code")["vendor_score"])
 
-    # ------------------------------
-    # SAVE UPDATED DATA
-    # ------------------------------
-    st.subheader("💾 Save Updated Data")
-
-    # Replace edited rows back into full DF
+    # SAVE UPDATED FILE
     df.update(edited_df)
-
     csv_data = df.to_csv(index=False)
 
+    st.subheader("💾 Save Updated Data")
     st.download_button(
         label="⬇ Download Updated master_pricing_clean.csv",
         data=csv_data,
